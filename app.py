@@ -13,6 +13,7 @@ from langchain_groq import ChatGroq
 from langchain_community.tools import DuckDuckGoSearchResults
 import streamlit as st
 from pathlib import Path
+import pandas as pd
 
 st.set_page_config(page_title="LangChain: Chat with SQL DB", page_icon="🦜")
 st.title("🦜 LangChain: Chat with SQL DB")
@@ -22,27 +23,20 @@ MYSQL="USE_MYSQL"
 prompt=ChatPromptTemplate.from_template(
     """
     You are a MySQL expert.
-
     If the user asks to CREATE a table, you should NOT attempt to read the schema first. 
     Instead, directly generate the SQL `CREATE TABLE` command with appropriate columns.
-    
-
     If an error occurs that the table already exists, consider renaming the table or asking the user for confirmation.
-
     If the user query requires reading or updating a table, then you can look at the schema.
-     
     If the user query about something that need to webs earched first verfy the schema of asked table or askea ntyhing then according to that schemna web search.
     Web search results:
     {results}
 
-    Previous conversation:
-    {prev}
+    Query:
 
-    Answer:
 """
 )
 
-search=DuckDuckGoSearchResults(name="search",num_results=10)
+
 radio_opt=["Use SQLLite 3 Database- Student.db","Connect to you MySQL Database"]
 
 selected_opt=st.sidebar.radio(label="Choose the DB which you want to chat",options=radio_opt)
@@ -64,7 +58,7 @@ if not db_uri:
 if not api_key:
     st.info("Please add the groq api key")
 else:
-  llm=ChatGroq(groq_api_key=api_key,model_name="gemma2-9b-it",streaming=True)
+  llm=ChatGroq(groq_api_key=api_key,model_name="llama-3.1-8b-instant",streaming=True)
 
 @st.cache_resource(ttl="2h")
 def configure_db(db_uri,mysql_host=None,mysql_user=None,mysql_password=None,mysql_db=None):
@@ -84,35 +78,44 @@ if db_uri==MYSQL:
 else:
     db=configure_db(db_uri)
 
+
+def generate_insights(table_name:str)->str:
+    df = pd.read_sql(f"SELECT * FROM {table_name} LIMIT 1000", db._engine)
+    summary = df.describe(include="all")
+    prompt = f"Generate interesting insights from this table summary:\n{summary}"
+    return llm.invoke(prompt)
+
+def data_quality_check(table_name: str) -> str:
+    df = pd.read_sql(f"SELECT * FROM `{table_name}` LIMIT 100;", db._engine)
+    report = []
+    if df.isnull().sum().sum() > 0:
+        report.append("⚠️ There are missing values in the table.")
+    if df.duplicated().sum() > 0:
+        report.append("⚠️ There are duplicate rows in the table.")
+    # Could add type checks or outlier detection
+    return "\n".join(report) if report else "✅ Table looks clean."
+
+generate_insights_tool=Tool(
+    name="Data Profile",
+    func=generate_insights,
+    description="Give the stats of the table"
+)
+
+data_quality_tool=Tool(
+    name="Quality_Check",
+    func=data_quality_check,
+    description="Describe the quality of data"
+)
 ## toolkit
 if api_key:
     toolkit=SQLDatabaseToolkit(db=db,llm=llm)
     sql_tools=toolkit.get_tools()
-
-    # agent=create_sql_agent(
-    #     llm=llm,
-    #     toolkit=toolkit,
-    #     verbose=True,
-    #     agent_type=AgentType.ZERO_SHOT_REACT_DESCRIPTION
-    # )
-    # sql_tool=Tool(
-    #     name="SQL tool",
-    #     func=agent.run,
-    #     description="An sql agent which performs crud operations"
-    # )
-    chain=prompt|llm
     
-    def search_web(query: str)->str:
-        results=search.run(query)
-        return chain.invoke({"results":results,"prev":st.session_state.messages})
-    search_tool = Tool(
-    name="Web Search",
-    func=search_web,
-    description="Use this for answering general knowledge or current events questions using web search."
-    )  
-    tools=sql_tools+[search_tool]
+   
+    
+    tools=sql_tools+[data_quality_tool,generate_insights_tool]
     sql_agent=initialize_agent(
-        tools,llm,agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,handle_parsing_errors=True,verbose=True
+        tools,llm,agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,handle_parsing_errors=True,verbose=True,max_iterations=10
     )
 
 if "messages" not in st.session_state or st.sidebar.button("Clear message history"):

@@ -10,6 +10,7 @@ dependencies = [
     "langchain-community>=0.3.29",
     "langchain-groq>=0.3.8",
     "mysql-connector-python>=9.4.0",
+    "pandas>=2.3.2",
     "pymysql>=1.1.2",
     "sqlalchemy>=2.0.43",
     "streamlit>=1.49.1",
